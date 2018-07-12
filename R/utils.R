@@ -5,6 +5,7 @@
 #' @import tidyr
 #' @import purrr
 #' @import stringr
+#' @import forcats
 
 # For thresholding propensity scores
 trim = function(x, min, max) {
@@ -52,6 +53,17 @@ sanitize_input = function(x,w,y) {
 	}
 
 	return(list(x,w,y))
+}
+
+# helper that knows how to row-concatenate things of different types
+concatenate = function(x,y) {
+	if (class(x) != class(y)) {
+		rlang::abort("Arguments must be of the same class")
+	}
+	switch(class(x),
+		"matrix" = rbind(x, y),
+		"factor" = fct_c(x, y),
+		c(x, y))
 }
 
 #' @title Toy data simulation

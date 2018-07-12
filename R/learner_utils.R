@@ -29,7 +29,7 @@ pick_model = function(models) {
 		    dplyr::summarize(mean_value = mean(as.numeric(value), na.rm=T)) %>% # as.numeric in case of weird things because of NAs
 		    dplyr::filter(mean_value==ifelse(models[[1]]$maximize, max(mean_value), min(mean_value))) %>%
 		    dplyr::pull(model) %>% dplyr::first() # in case of ties
-		return(models[[best_model_name]])
+		return(best_model_name)
 	}
 }
 
@@ -88,10 +88,14 @@ learner_cv = function(x, y, model_specs, weights=NULL, k_folds=5, select_by="bes
 	if(is.logical(y)) { 	# caret wants binary input to be a two-class factor. 
 		y = lgl_to_fct(y) 	# This makes sure that TRUE corresponds to the first factor level
 	}
+	if(k_folds == 1) {
+		list(x, y, 1:length(y)) %>% map(~concatenate(.,.)) %->%
+	        c(x_fake, y_fake, index_fake)
+	}
 	if ((select_by=="oneSE") & (length(model_specs)>1)) {
 		rlang::abort("The oneSE rule is only defined when comparing models within a single learning algorithm. It is not always clear how to compare the 'complexity' of the models implicit within two different algorihtms (i.e. LASSO and GBM)")
 	}
-	model = model_specs %>% purrr::imap(function(settings, method) {
+	models = model_specs %>% purrr::imap(function(settings, method) {
 		train_args = list(
 			x = x, y = y, weights = weights, 
 			metric = "wRMSE", maximize=F, # these will be changed if it is a classification problem
@@ -100,14 +104,25 @@ learner_cv = function(x, y, model_specs, weights=NULL, k_folds=5, select_by="bes
 				selectionFunction = select_by,
 				summaryFunction=summary_metrics,
 				method='cv', number=k_folds,
-			  	returnResamp="final", savePredictions="final"))
+			  	returnResamp="final", savePredictions="all"))
+		if(k_folds == 1) {
+		    train_args$x = x_fake
+		    train_args$y = y_fake
+			train_args$trControl$index=list(index=index_fake)
+		}
 		if(is.factor(y)) {
 			train_args$trControl$classProbs=T
 			train_args$metric="wDeviance"} # should be minimized just like wRMSE
 		do.call(caret::train, c(train_args, settings$extra_args))
-	}) %>% pick_model()
-
-	learner = list(model=model)
+	}) 
+	
+	if (k_folds == 1) { # fix the indexing to correct for the kludge that lets us resample predictions when no CV is done
+		models %<>% map(function(model) {
+			model$pred %<>% mutate(rowIndex = index_fake[rowIndex])
+			return(model)
+		})
+	}
+	learner = list(models=models, best_model_name=pick_model(models))
 	if(is.factor(y)) {
 		learner$positive_class = levels(y)[1]
 		learner$p_min = p_min
@@ -147,18 +162,22 @@ learner_cv = function(x, y, model_specs, weights=NULL, k_folds=5, select_by="bes
 #' }
 #' @export predict.learner
 predict.learner = function(object, newx, ...) {
-	if(object$model$modelType == "Classification") {
-		predict(object$model, newdata=newx, type="prob")[[object$positive_class]] %>%
+	best_model = object$models[[object$best_model_name]]
+	if(best_model$modelType == "Classification") {
+		predict(best_model, newdata=newx, type="prob")[[object$positive_class]] %>%
 			trim(object$p_min, object$p_max)
 	} else {
-		predict(object$model, newdata=newx) 
+		predict(best_model, newdata=newx) 
 	}
 }
 
 # get the internal cv predictions (at the optimal hyperparameter value) that were used for hyperparameter selection
 resample_predictions = function(learner) {
-	predictions = learner$model$pred %>% dplyr::arrange(rowIndex)
-	if(learner$model$modelType == "Classification") {
+	best_model = learner$models[[learner$best_model_name]]
+	predictions = best_model$pred %>% 
+		dplyr::inner_join(best_model$bestTune) %>% 
+		dplyr::arrange(rowIndex)
+	if(best_model$modelType == "Classification") {
 		predictions[[learner$positive_class]]
 	} else {
 		predictions %>% dplyr::pull(pred)
