@@ -12,6 +12,7 @@ summary_metrics = function(data, lev=NULL, model=NULL) {
 		positive_class = levels(y)[1]
 		y = y==positive_class # convert y to a logical
 		p = data[[positive_class]] # the column of probabilities will be called whatever is in levels(y)[1] since y is a factor 
+   		p = trim(p, .Machine$double.eps, 1-.Machine$double.eps) # avoid problems when estimated probabilities are too close to 0 or 1
 		c(wDeviance = -sum(weights*(y*log(p) + (1-y)*log(1-p)))/sum(weights)) # from the weighted bernoulli log-likelihood
 	}
 }
@@ -20,7 +21,7 @@ summary_metrics = function(data, lev=NULL, model=NULL) {
 # or highest weighted accuracy (classification)
 pick_model = function(models) {
 	if(length(models)==1) {
-		return(models[[1]])
+		return(names(models)[[1]])
 	} else {
 		best_model_name = caret::resamples(models)$values %>% # each row is a fold, columns are (model x metric)
 		    tidyr::gather(model_metric, value, -Resample) %>% 
